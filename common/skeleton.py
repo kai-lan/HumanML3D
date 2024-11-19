@@ -55,7 +55,9 @@ class Skeleton(object):
     def inverse_kinematics_np(self, joints, face_joint_idx, smooth_forward=False):
         assert len(face_joint_idx) == 4
         '''Get Forward Direction'''
-        l_hip, r_hip, sdr_r, sdr_l = face_joint_idx
+        # l_hip, r_hip, sdr_r, sdr_l = face_joint_idx     # BUG in original HUMANML3D: https://github.com/EricGuo5513/HumanML3D/issues/119
+        r_hip, l_hip, sdr_r, sdr_l = face_joint_idx   # this is correct
+
         across1 = joints[:, r_hip] - joints[:, l_hip]
         across2 = joints[:, sdr_r] - joints[:, sdr_l]
         across = across1 + across2
@@ -82,7 +84,11 @@ class Skeleton(object):
         quat_params[:, 0] = root_quat
         # quat_params[0, 0] = np.array([[1.0, 0.0, 0.0, 0.0]])
         for chain in self._kinematic_tree:
-            R = root_quat
+            # R = root_quat   # BUG: not all chains start from the root
+            if chain[0] == 9:
+                R = global_R
+            else:
+                R = root_quat    # this is correct
             for j in range(len(chain) - 1):
                 # (batch, 3)
                 u = self._raw_offset_np[chain[j+1]][np.newaxis,...].repeat(len(joints), axis=0)
@@ -97,6 +103,8 @@ class Skeleton(object):
 
                 quat_params[:,chain[j + 1], :] = R_loc
                 R = qmul_np(R, R_loc)
+                if chain[j + 1] == 9:
+                    global_R = R.copy()
 
         return quat_params
 
@@ -113,11 +121,16 @@ class Skeleton(object):
         joints[:, 0] = root_pos
         for chain in self._kinematic_tree:
             if do_root_R:
-                R = quat_params[:, 0]
+                if chain[0] == 9:
+                    R = global_R
+                else:
+                    R = quat_params[:, 0]
             else:
                 R = torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(len(quat_params), -1).detach().to(self.device)
             for i in range(1, len(chain)):
                 R = qmul(R, quat_params[:, chain[i]])
+                if chain[i] == 9:
+                    global_R = R.clone()
                 offset_vec = offsets[:, chain[i]]
                 joints[:, chain[i]] = qrot(R, offset_vec) + joints[:, chain[i-1]]
         return joints
@@ -136,14 +149,20 @@ class Skeleton(object):
         joints = np.zeros(quat_params.shape[:-1] + (3,))
         joints[:, 0] = root_pos
         for chain in self._kinematic_tree:
-            if do_root_R:
-                R = quat_params[:, 0]
+            if do_root_R:   # original BUG: https://github.com/EricGuo5513/HumanML3D/issues/119
+                if chain[0] == 9:
+                    R = global_R
+                else:
+                    R = quat_params[:, 0]
             else:
                 R = np.array([[1.0, 0.0, 0.0, 0.0]]).repeat(len(quat_params), axis=0)
             for i in range(1, len(chain)):
                 R = qmul_np(R, quat_params[:, chain[i]])
+                if chain[i] == 9:
+                    global_R = R.copy()
                 offset_vec = offsets[:, chain[i]]
                 joints[:, chain[i]] = qrot_np(R, offset_vec) + joints[:, chain[i - 1]]
+
         return joints
 
     def forward_kinematics_cont6d_np(self, cont6d_params, root_pos, skel_joints=None, do_root_R=True):
@@ -160,11 +179,16 @@ class Skeleton(object):
         joints[:, 0] = root_pos
         for chain in self._kinematic_tree:
             if do_root_R:
-                matR = cont6d_to_matrix_np(cont6d_params[:, 0])
+                if chain[0] == 9:
+                    matR = global_matR
+                else:
+                    matR = cont6d_to_matrix_np(cont6d_params[:, 0])
             else:
                 matR = np.eye(3)[np.newaxis, :].repeat(len(cont6d_params), axis=0)
             for i in range(1, len(chain)):
                 matR = np.matmul(matR, cont6d_to_matrix_np(cont6d_params[:, chain[i]]))
+                if chain[i] == 9:
+                    global_matR = matR.copy()
                 offset_vec = offsets[:, chain[i]][..., np.newaxis]
                 # print(matR.shape, offset_vec.shape)
                 joints[:, chain[i]] = np.matmul(matR, offset_vec).squeeze(-1) + joints[:, chain[i-1]]
@@ -183,11 +207,16 @@ class Skeleton(object):
         joints[..., 0, :] = root_pos
         for chain in self._kinematic_tree:
             if do_root_R:
-                matR = cont6d_to_matrix(cont6d_params[:, 0])
+                if chain[i] == 9:
+                    matR = global_matR
+                else:
+                    matR = cont6d_to_matrix(cont6d_params[:, 0])
             else:
                 matR = torch.eye(3).expand((len(cont6d_params), -1, -1)).detach().to(cont6d_params.device)
             for i in range(1, len(chain)):
                 matR = torch.matmul(matR, cont6d_to_matrix(cont6d_params[:, chain[i]]))
+                if chain[i] == 9:
+                    global_matR = matR.clone()
                 offset_vec = offsets[:, chain[i]].unsqueeze(-1)
                 # print(matR.shape, offset_vec.shape)
                 joints[:, chain[i]] = torch.matmul(matR, offset_vec).squeeze(-1) + joints[:, chain[i-1]]
